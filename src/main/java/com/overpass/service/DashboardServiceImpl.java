@@ -5,18 +5,17 @@ import java.sql.Timestamp;
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
 import java.time.LocalDate;
+import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.Date;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Locale;
-import java.util.Map;
+import java.util.*;
+import java.util.stream.Stream;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.overpass.model.*;
 import org.json.JSONObject;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
@@ -28,6 +27,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
 import org.springframework.util.StringUtils;
+import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestTemplate;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -36,17 +36,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.overpass.common.Constants.Status;
 import com.overpass.common.Constants.StatusLight;
 import com.overpass.common.Utils;
-import com.overpass.model.Dashboard;
-import com.overpass.model.GroupOverpass;
-import com.overpass.model.MessageToNotify;
-import com.overpass.model.Overpass;
-import com.overpass.model.OverpassStatus;
-import com.overpass.model.PostNotification;
-import com.overpass.model.PostNotificationData;
-import com.overpass.model.PushNotificationRequest;
-import com.overpass.model.SmartLight;
-import com.overpass.model.SmartLightResponse;
-import com.overpass.model.User;
 import com.overpass.reposiroty.DashboardRepository;
 import com.overpass.reposiroty.MappingOverpassRepository;
 import com.overpass.reposiroty.OverpassRepository;
@@ -65,8 +54,14 @@ public class DashboardServiceImpl implements DashboardService {
 	@Autowired
 	private OverpassRepository overpassRepository;
 	
+	@Value("${getTokenUrl}")
+	private String getTokenUrl;
+
+	@Value("${refreshToken}")
+	private String refreshTokenUrl;
+
 	@Value("${overpassUrl}")
-	private String urlOvepass;
+	private String overpassUrl;
 	
 	@Value("${lineNotifyUrl}")
 	private String lineNotifyUrl;
@@ -91,6 +86,8 @@ public class DashboardServiceImpl implements DashboardService {
 	
 	@Autowired
 	private UserRepository userRepository;
+
+	private String token = "";
 	
 	@Override
 	public Dashboard getDataDashBoard(Authentication authentication) {
@@ -118,38 +115,43 @@ public class DashboardServiceImpl implements DashboardService {
 	public List<Integer> validateOverpass() {
 		List<Integer> result = new ArrayList<>();
 		try {
-			
+			SmartLight smartLight = new SmartLight();
 			List<Overpass> overpasses = overpassRepository.getOverpassesByStatus(Status.ACTIVE);
 			Map<String, String> overpassLastStatus = overpassRepository.getLastStatusOverpassStatus();
-			for(Overpass o : overpasses) {
-				String url = urlOvepass.replace(":id", o.getId());
-				ResponseEntity<String> rest;
-				try {
-					rest = restTemplate.exchange(url, HttpMethod.GET, null, String.class);
-				} catch(Exception ex) {
-					continue;
-				}
-				if(rest.getStatusCode() == HttpStatus.OK) {
-					String rs = rest.getBody();
-					ObjectMapper mapper = new ObjectMapper();
-					SmartLight light = null;
-					try {
-						light = mapper.readValue(rs, SmartLight.class);
-					} catch (JsonProcessingException e) {
-						e.printStackTrace();
+			try {
+				callGetData(smartLight);
+			} catch (HttpClientErrorException ex) {
+				if (ex.getRawStatusCode() == HttpStatus.UNAUTHORIZED.value()) {
+					ResponseEntity<Token>  tokenResponseEntity = restTemplate.exchange(getTokenUrl, HttpMethod.GET, null, Token.class);
+					if (tokenResponseEntity.getStatusCode().equals(HttpStatus.OK)) {
+						Token.Data data = tokenResponseEntity.getBody().getData();
+						token = data.getIdToken();
+						try {
+							callGetData(smartLight);
+						} catch(Exception e) {
+							log.error("validateOverpass.UNAUTHORIZED: ", e);
+						}
 					}
-					if(light != null && light.getStatus() == 200 && !light.getResponse().isEmpty()) {
-						
-						SmartLightResponse res = light.getResponse().get(0);
+				}
+			} catch(Exception ex) {
+				log.error("validateOverpass.overpassUrl: ", ex);
+			}
+
+			for(Overpass o : overpasses) {
+				if(smartLight != null && smartLight.getStatus() == 200 && !smartLight.getResponse().isEmpty()) {
+
+					Optional<SmartLightResponse> smartLightResponseOptional = smartLight.getResponse().stream().filter(response -> response.getIdOverpass().equals(o.getId())).findFirst();
+					if (smartLightResponseOptional.isPresent()) {
+						SmartLightResponse res = smartLightResponseOptional.get();
 						OverpassStatus overpass = new OverpassStatus();
-						overpass.setOverpassId(res.getIdOverpass());  
+						overpass.setOverpassId(res.getIdOverpass());
 						Date parsedDate;
 						Timestamp timestamp;
 						try {
 							SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'");
-						    parsedDate = dateFormat.parse(res.getTimestamp());
-						    timestamp = new java.sql.Timestamp(parsedDate.getTime());
-						    overpass.setEffectiveDate(timestamp);
+							parsedDate = dateFormat.parse(res.getTimestamp());
+							timestamp = new java.sql.Timestamp(parsedDate.getTime());
+							overpass.setEffectiveDate(timestamp);
 						} catch (ParseException e) {
 							overpass.setEffectiveDate(new Timestamp(System.currentTimeMillis()));
 						}
@@ -175,7 +177,7 @@ public class DashboardServiceImpl implements DashboardService {
 							String mapUrl = "http://www.google.com/maps/place/" + o.getLatitude() + "," + o.getLongtitude();
 							overpass.setMapUrl(mapUrl);
 							overpass.setId("" + res.getId());
-							
+
 							MessageToNotify messageNotify = getMessageToNotify(overpass, o.getProvince(), w);
 							messageNotify.setId(overpass.getId());
 							overpassRepository.updateActiveOverpassStatus(overpass.getOverpassId());
@@ -197,12 +199,41 @@ public class DashboardServiceImpl implements DashboardService {
 						}
 						//sendEmail(messageToNotifys);
 					}
+
 				}
 			}
 		}catch(Exception ex) {
 			log.error(ex.getMessage());
 		}
 		return result;
+	}
+
+	private void callGetData(SmartLight smartLight) {
+		ParameterizedTypeReference<Map<String, JsonNode>> responseType = new ParameterizedTypeReference<Map<String, JsonNode>>() {};
+		String getDataUrl = overpassUrl.replace(":token", token);
+		ResponseEntity<Map<String, JsonNode>> rest = restTemplate.exchange(getDataUrl, HttpMethod.GET, null, responseType);
+		Map<String, JsonNode> map = rest.getBody();
+		smartLight.setStatus(200);
+		List<SmartLightResponse> smartLightResponses = new ArrayList<>();
+		for (Map.Entry<String, JsonNode> node : map.entrySet()) {
+			JsonNode jsonNode = node.getValue();
+			jsonNode.get("sensors").forEach(f -> {
+				if (f.has("subsensors")) {
+					f.get("subsensors").forEach(s -> {
+						if (s.get("name").asText().equals("ActivePowerTotal")) {
+							Double power = (s.has("value")) ? s.get("value").asDouble() : 0;
+							SmartLightResponse smartLightResponse = new SmartLightResponse();
+							smartLightResponse.setIdOverpass(node.getKey());
+							smartLightResponse.setWatt(power);
+							smartLightResponse.setStatus((s.has("value")) ? StatusLight.ON.name() : StatusLight.OFF.name());
+							smartLightResponse.setTimestamp(ZonedDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'")));
+							smartLightResponses.add(smartLightResponse);
+							smartLight.setResponse(smartLightResponses);
+						}
+					});
+				}
+			});
+		}
 	}
 
 	private void senNotificationToLine(String overpassId, MessageToNotify messageNotify){
