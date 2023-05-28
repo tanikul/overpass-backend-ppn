@@ -4,6 +4,7 @@ import java.math.BigDecimal;
 import java.sql.Timestamp;
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
+import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
@@ -213,12 +214,12 @@ public class DashboardServiceImpl implements DashboardService {
 				if (f.has("subsensors")) {
 					f.get("subsensors").forEach(s -> {
 						if (s.get("name").asText().equals("ActivePowerTotal")) {
-							Double power = (s.has("value")) ? s.get("value").asDouble() : 0;
+							Double power = (s.has("value")) ? (double) Math.round((s.get("value").asDouble() * 1000) * 100) / 100 : 0;
 							SmartLightResponse smartLightResponse = new SmartLightResponse();
 							smartLightResponse.setIdOverpass(node.getKey());
 							smartLightResponse.setWatt(power);
 							smartLightResponse.setStatus((s.has("value")) ? StatusLight.ON.name() : StatusLight.OFF.name());
-							smartLightResponse.setTimestamp(ZonedDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'")));
+							smartLightResponse.setTimestamp(ZonedDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'").withZone(ZoneId.systemDefault())));
 							smartLightResponses.add(smartLightResponse);
 							smartLight.setResponse(smartLightResponses);
 						}
