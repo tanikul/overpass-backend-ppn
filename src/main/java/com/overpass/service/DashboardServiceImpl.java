@@ -10,6 +10,7 @@ import java.time.format.DateTimeFormatter;
 import java.util.*;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.overpass.model.*;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -202,17 +203,18 @@ public class DashboardServiceImpl implements DashboardService {
 	}
 
 	private void callGetData(SmartLight smartLight) {
-		ParameterizedTypeReference<Map<String, JsonNode>> responseType = new ParameterizedTypeReference<Map<String, JsonNode>>() {};
+		ParameterizedTypeReference<Map<String, ObjectNode>> responseType = new ParameterizedTypeReference<Map<String, ObjectNode>>() {};
 		String getDataUrl = overpassUrl.replace(":token", token);
-		ResponseEntity<Map<String, JsonNode>> rest = restTemplate.exchange(getDataUrl, HttpMethod.GET, null, responseType);
-		Map<String, JsonNode> map = rest.getBody();
+		ResponseEntity<Map<String, ObjectNode>> rest = restTemplate.exchange(getDataUrl, HttpMethod.GET, null, responseType);
+		Map<String, ObjectNode> map = rest.getBody();
 		smartLight.setStatus(200);
 		List<SmartLightResponse> smartLightResponses = new ArrayList<>();
-		for (Map.Entry<String, JsonNode> node : map.entrySet()) {
-			JsonNode jsonNode = node.getValue();
-			jsonNode.get("sensors").forEach(f -> {
-				if (f.has("subsensors")) {
-					f.get("subsensors").forEach(s -> {
+		for (Map.Entry<String, ObjectNode> node : map.entrySet()) {
+			ObjectNode objectNode = node.getValue();
+			JsonNode jsonNodes = objectNode.get("sensors");
+			jsonNodes.forEach(jn -> {
+				if (jn.has("subsensors")) {
+					jn.get("subsensors").forEach(s -> {
 						if (s.get("name").asText().equals("ActivePowerTotal")) {
 							Double power = (s.has("value")) ? (double) Math.round((s.get("value").asDouble() * 1000) * 100) / 100 : 0;
 							SmartLightResponse smartLightResponse = new SmartLightResponse();
